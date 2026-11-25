@@ -43,6 +43,8 @@ app.get("/hello", (req, res) => {
 });
 
 gameServer.define("my_room", MyRoom);
+// The example page (src/client.ts) joins "my_room_2" — same room class.
+gameServer.define("my_room_2", MyRoom);
 gameServer.define("lobby", LobbyRoom);
 
 // Define RelayRoom as "relay"

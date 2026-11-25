@@ -260,6 +260,9 @@ export const server = config({
     my_room: defineRoom(MyRoom).
       filterBy(["progress"]).
       sortBy({ clients: -1 }),
+    // The example page (src/client.ts) joins "my_room_2" — same room class,
+    // exposed under the name the button connects to.
+    my_room_2: defineRoom(MyRoom),
   },
 
   routes: createRouter({

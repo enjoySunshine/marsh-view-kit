@@ -19,6 +19,8 @@ const gameServer = new Server({ engine });
 
 // Register DummyRoom as "chat"
 gameServer.define("my_room", MyRoom);
+// The example page (src/client.ts) joins "my_room_2" — same room class.
+gameServer.define("my_room_2", MyRoom);
 
 process.on('unhandledRejection', r => console.log(r));
 gameServer.listen(port);

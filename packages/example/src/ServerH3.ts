@@ -22,6 +22,8 @@ const transport = new H3Transport({ server, app });
 const gameServer = new Server({ transport, });
 
 gameServer.define("my_room", MyRoom);
+// The example page (src/client.ts) joins "my_room_2" — same room class.
+gameServer.define("my_room_2", MyRoom);
 
 gameServer.listen(port)
   .then(() => console.log(`Listening on https://${endpoint}:${port}`))

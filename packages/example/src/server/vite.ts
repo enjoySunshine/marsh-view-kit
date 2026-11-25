@@ -13,6 +13,9 @@ export const server = defineServer({
 
   rooms: {
     my_room: defineRoom(MyRoom),
+    // The example page (src/client.ts) joins "my_room_2" — same room class,
+    // exposed under the name the button connects to.
+    my_room_2: defineRoom(MyRoom),
   },
 
   express: (app) => {

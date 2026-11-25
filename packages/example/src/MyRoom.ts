@@ -1,5 +1,5 @@
 import { CloseCode, Room, type Client, validate, type Messages, type AuthContext, definePlugins } from "@colyseus/core";
-import { schema, t, type SchemaType } from "@colyseus/schema";
+import { schema, t, StateView, type SchemaType } from "@colyseus/schema";
 import { AnalyticsPlugin, CloudSavesPlugin, LeaderboardsPlugin } from "@colyseus/database";
 import { z } from "zod";
 import { database } from "./db/database.ts";
@@ -22,9 +22,29 @@ export type Player = SchemaType<typeof Player>;
 export const MyRoomState = schema({
   mapWidth: t.number(),
   mapHeight: t.number(),
-  players: t.map(Player),
+  // `.view()` turns `players` into a view-scoped collection: the full list
+  // still lives on the server, but each client only receives the entries its
+  // own StateView opts into (see updateVisibility() below).
+  players: t.map(Player).view(),
 });
 export type MyRoomState = SchemaType<typeof MyRoomState>;
+
+/**
+ * Area-of-interest radius (pixels). A client only receives players whose
+ * distance to its own player is at most this value. 200 = a quarter of the
+ * 800px-wide map, matching the canvas/collage layout.
+ */
+export const VIEW_RADIUS = 200;
+const VIEW_RADIUS_SQUARED = VIEW_RADIUS * VIEW_RADIUS;
+
+/**
+ * Anti-flicker margin (pixels). A player already inside a client's view stays
+ * visible until it crosses VIEW_RADIUS + HYSTERESIS_MARGIN, and only enters
+ * once it is within VIEW_RADIUS. Stepping back and forth exactly on the
+ * boundary therefore can't make a circle appear/disappear on consecutive
+ * frames.
+ */
+const HYSTERESIS_MARGIN = 20;
 
 const thirdPartyMessages: Messages<MyRoom> = {
   nopayload: function (client: MyClient, message: any) {
@@ -146,7 +166,11 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
       player.y = message.y;
     });
 
-    this.setSimulationInterval(() => this.update());
+    // Re-evaluate every client's area of interest at 30Hz — the same rate at
+    // which the client sends arrow-key moves. Each client keeps its own
+    // StateView, so two clients standing apart receive different player lists
+    // while the authoritative `state.players` map always holds all 20.
+    this.setSimulationInterval(() => this.update(), 1000 / 30);
   }
 
   onJoin(client: MyClient, options: any) {
@@ -154,6 +178,12 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
     player.x = Math.random() * this.state.mapWidth;
     player.y = Math.random() * this.state.mapHeight;
     this.state.players.set(client.sessionId, player);
+
+    // Per-client view of the state. The room's full player list is untouched;
+    // only entries added to this view are encoded for this client.
+    client.view = new StateView();
+    this.updateClientVisibility(client);
+
     console.log("ON JOIN", { VERSION });
   }
 
@@ -162,10 +192,50 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
   }
 
   update() {
-    // this.state.players.forEach((player, key) => {
-    //   player.x += 1;
-    //   player.y += 1;
-    // });
+    // Refresh each client's area of interest. add()/remove() only touch the
+    // client's own StateView; the shared state keeps every player in the room.
+    for (const client of this.clients) {
+      this.updateClientVisibility(client);
+    }
+  }
+
+  /**
+   * Reconcile one client's StateView with the area around its own player.
+   *
+   * - Players within VIEW_RADIUS are added to the view (if not already there).
+   * - Players already visible are kept until they pass VIEW_RADIUS plus the
+   *   hysteresis margin, so jittering on the boundary never flickers.
+   * - The client's own player is always visible.
+   */
+  private updateClientVisibility(client: MyClient): void {
+    const view = client.view;
+    if (!view) { return; }
+
+    const self = this.state.players.get(client.sessionId);
+    if (!self) { return; }
+
+    const leaveRadiusSquared =
+      (VIEW_RADIUS + HYSTERESIS_MARGIN) * (VIEW_RADIUS + HYSTERESIS_MARGIN);
+
+    this.state.players.forEach((player, sessionId) => {
+      const dx = player.x - self.x;
+      const dy = player.y - self.y;
+      const distanceSquared = dx * dx + dy * dy;
+
+      const isVisible = view.has(player);
+
+      if (distanceSquared <= VIEW_RADIUS_SQUARED) {
+        // Enter (or stay in) the inner circle.
+        if (!isVisible) {
+          view.add(player);
+        }
+
+      } else if (isVisible && distanceSquared > leaveRadiusSquared) {
+        // Only drop once clearly outside the buffered outer circle — this is
+        // the hysteresis guard against boundary flicker.
+        view.remove(player);
+      }
+    });
   }
 
   async onLeave(client, code: number) {
@@ -179,6 +249,10 @@ export class MyRoom extends Room<{ state: MyRoomState, client: MyClient, input: 
 
     } catch (e) {
       this.state.players.delete(client.sessionId);
+      // Release the per-client view's ID and its visibility bits so a future
+      // client can't inherit this view's filtering state.
+      client.view?.dispose();
+      client.view = undefined;
       console.log(client.sessionId, "left!");
     }
   }
